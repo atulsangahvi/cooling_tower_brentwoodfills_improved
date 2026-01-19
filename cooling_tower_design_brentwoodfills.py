@@ -7,10 +7,9 @@ import math
 import json
 import sys
 from io import BytesIO
-from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
 import streamlit as st
 
+# Check for required packages
 try:
     import numpy as np
     import pandas as pd
@@ -18,20 +17,62 @@ try:
 except ImportError:
     st.error("Required packages not installed. Please install numpy and pandas.")
     HAS_NUMPY_PANDAS = False
+
 # Check for optional packages
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
+    from reportlab.lib.units import mm
     HAS_REPORTLAB = True
 except ImportError:
     HAS_REPORTLAB = False
-    st.warning("📄 **Note**: PDF report generation requires 'reportlab'. Install with: `pip install reportlab`")
 
 try:
     import matplotlib.pyplot as plt
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
+
+# -------------------------------
+# Password Protection
+# -------------------------------
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+    
+    # First run, show input for password
+    if "password_correct" not in st.session_state:
+        st.text_input(
+            "Enter password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.write("*Contact admin for access*")
+        return False
+    
+    # Password not correct, show input + error
+    elif not st.session_state["password_correct"]:
+        st.text_input(
+            "Enter password", 
+            type="password", 
+            on_change=password_entered, 
+            key="password"
+        )
+        st.error("😕 Password incorrect")
+        return False
+    
+    # Password correct
+    else:
+        return True
+
 # -------------------------------
 # Utilities
 # -------------------------------
@@ -515,9 +556,131 @@ def optimize_LG_ratio(T_hot: float, T_cold: float, Twb: float,
     }
 
 # -------------------------------
+# PDF Report Generation
+# -------------------------------
+def build_pdf_report(proj_name, flow_type, fill_name, depth_m, free_area_frac,
+                    Qw_L_min, m_dot_w, Tin_C, Tout_C, Tdb_C, Twb_C, Q_kW, thermal_safety,
+                    A_fill, v_air_face, water_loading_m3_h_m2, DP_fill, Vdot_user,
+                    L_G_current, Q_ach_kW, Tout_ach_C, required_kaVL, available_kaVL,
+                    merkel_check, fill, warnings):
+    """Generate PDF report"""
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    Wp, Hp = A4
+    
+    def line(y, text, size=10, bold=False):
+        font = "Helvetica-Bold" if bold else "Helvetica"
+        c.setFont(font, size)
+        c.drawString(20*mm, y, text)
+        return y - 5*mm
+    
+    y = Hp - 20*mm
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(20*mm, y, f"Cooling Tower Design Report — {proj_name}")
+    y -= 8*mm
+    c.setFont("Helvetica", 10)
+    c.drawString(20*mm, y, f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
+    y -= 15*mm
+    
+    # Inputs
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(20*mm, y, "DESIGN INPUTS")
+    y -= 8*mm
+    
+    inputs = [
+        ("Tower flow", flow_type),
+        ("Fill model", fill_name),
+        ("Fill depth", f"{depth_m:.2f} m"),
+        ("Free‑area fraction", f"{free_area_frac:.2f}"),
+        ("Water flow", f"{Qw_L_min:.0f} L/min ({m_dot_w:.1f} kg/s)"),
+        ("Hot water in", f"{Tin_C:.1f} °C"),
+        ("Cold water target", f"{Tout_C:.1f} °C"),
+        ("Ambient DB/WB", f"{Tdb_C:.1f} / {Twb_C:.1f} °C"),
+        ("Heat load", f"{Q_kW:.0f} kW"),
+        ("Design safety factor", f"{thermal_safety:.2f}")
+    ]
+    
+    for k, v in inputs:
+        y = line(y, f"• {k}: {v}", 10)
+    
+    y -= 10*mm
+    
+    # Results
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(20*mm, y, "DESIGN RESULTS")
+    y -= 8*mm
+    
+    results = [
+        ("Fill plan area", f"{A_fill:.2f} m²"),
+        ("Air face velocity", f"{v_air_face:.2f} m/s"),
+        ("Water loading", f"{water_loading_m3_h_m2:.1f} m³/h·m²"),
+        ("Fill pressure drop", f"{DP_fill:.0f} Pa"),
+        ("Fan airflow", f"{Vdot_user:.2f} m³/s"),
+        ("L/G ratio", f"{L_G_current:.2f}"),
+        ("Achievable heat rejection", f"{Q_ach_kW:.0f} kW"),
+        ("Achievable cold water out", f"{Tout_ach_C:.1f} °C")
+    ]
+    
+    for k, v in results:
+        y = line(y, f"• {k}: {v}", 10)
+    
+    y -= 10*mm
+    
+    # Merkel Verification
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(20*mm, y, "MERKEL VERIFICATION")
+    y -= 8*mm
+    
+    merkel_items = [
+        ("Required kaV/L", f"{required_kaVL:.2f}"),
+        ("Available kaV/L", f"{available_kaVL:.2f}"),
+        ("Safety factor", f"{merkel_check['safety_factor']:.2f}"),
+        ("Status", "SUFFICIENT" if merkel_check["sufficient"] else "INSUFFICIENT")
+    ]
+    
+    for k, v in merkel_items:
+        y = line(y, f"• {k}: {v}", 10)
+    
+    y -= 10*mm
+    
+    # Fill Details
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(20*mm, y, "FILL CHARACTERISTICS")
+    y -= 8*mm
+    
+    fill_details = [
+        ("Vendor", fill.get("vendor", "")),
+        ("Geometry", fill.get("geometry", "")),
+        ("Material", fill.get("material", "")),
+        ("Fouling resistance", fill.get("fouling_resistance", "N/A")),
+        ("Notes", fill.get("notes", ""))
+    ]
+    
+    for k, v in fill_details:
+        if v:  # Only include if value exists
+            y = line(y, f"• {k}: {v}", 10)
+    
+    # Warnings if any
+    if warnings:
+        y -= 10*mm
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(20*mm, y, "DESIGN WARNINGS")
+        y -= 8*mm
+        
+        for warn in warnings[:5]:  # Limit to 5 warnings
+            y = line(y, f"• {warn}", 9)
+    
+    c.showPage()
+    c.save()
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+# -------------------------------
 # Main Application
 # -------------------------------
-def main():
+def main_app():
+    """Main application after password check"""
     if not HAS_NUMPY_PANDAS:
         st.error("""
         ## Required packages not installed!
@@ -537,6 +700,10 @@ def main():
     st.set_page_config(page_title="Cooling Tower Sizer — Enhanced", layout="wide")
     st.title("🧊 Cooling Tower Thermal Sizer — Enhanced")
     st.caption("Engineering estimator with realistic fill data and Merkel method verification")
+    
+    # Display package status
+    if not HAS_REPORTLAB:
+        st.warning("📄 **Note**: PDF report generation requires 'reportlab'. Install with: `pip install reportlab`")
     
     # Sidebar
     with st.sidebar:
@@ -698,10 +865,9 @@ def main():
             st.write(f"**Required air flow at optimal:** {opt_result['required_air_flow_kg_s']:.2f} kg/s")
             
             # Plot if matplotlib is available
-            try:
-                import matplotlib.pyplot as plt
-                points = opt_result["evaluated_points"]
-                if points:
+            if HAS_MATPLOTLIB and opt_result["evaluated_points"]:
+                try:
+                    points = opt_result["evaluated_points"]
                     LGs = [p[0] for p in points]
                     safeties = [p[1] for p in points]
                     
@@ -720,10 +886,10 @@ def main():
                     ax.legend()
                     
                     st.pyplot(fig)
-            except ImportError:
-                st.warning("Matplotlib not installed. Install with: `pip install matplotlib`")
-            except Exception as e:
-                st.warning(f"Could not plot: {e}")
+                except Exception as e:
+                    st.warning(f"Could not plot: {e}")
+            elif not HAS_MATPLOTLIB:
+                st.info("Install matplotlib for visualization: `pip install matplotlib`")
     
     # -------------------------------
     # Results Summary
@@ -811,7 +977,7 @@ def main():
         })
     
     # -------------------------------
-    # Simple Text Report (Alternative to PDF)
+    # Report Generation
     # -------------------------------
     st.markdown("---")
     st.markdown("## 📄 Design Report")
@@ -878,27 +1044,28 @@ def main():
         mime="text/plain",
     )
     
-    # Optional: Try to generate PDF if reportlab is available
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.units import mm
-        
-        if st.button("📄 Generate PDF Report (requires reportlab)"):
+    # PDF Generation (if reportlab is available)
+    if HAS_REPORTLAB:
+        if st.button("📄 Generate PDF Report"):
             with st.spinner("Generating PDF..."):
-                pdf_bytes = build_pdf_report(proj_name, flow_type, fill_name, depth_m, free_area_frac,
-                                           Qw_L_min, m_dot_w, Tin_C, Tout_C, Tdb_C, Twb_C, Q_kW, thermal_safety,
-                                           A_fill, v_air_face, water_loading_m3_h_m2, DP_fill, Vdot_user,
-                                           L_G_current, Q_ach_kW, Tout_ach_C, required_kaVL, available_kaVL,
-                                           merkel_check, fill, warnings)
-                
-                st.download_button(
-                    label="📄 Download PDF Report",
-                    data=pdf_bytes,
-                    file_name=f"{proj_name.replace(' ', '_')}_CoolingTower_Design.pdf",
-                    mime="application/pdf",
-                )
-    except ImportError:
+                try:
+                    pdf_bytes = build_pdf_report(
+                        proj_name, flow_type, fill_name, depth_m, free_area_frac,
+                        Qw_L_min, m_dot_w, Tin_C, Tout_C, Tdb_C, Twb_C, Q_kW, thermal_safety,
+                        A_fill, v_air_face, water_loading_m3_h_m2, DP_fill, Vdot_user,
+                        L_G_current, Q_ach_kW, Tout_ach_C, required_kaVL, available_kaVL,
+                        merkel_check, fill, warnings
+                    )
+                    
+                    st.download_button(
+                        label="📄 Download PDF Report",
+                        data=pdf_bytes,
+                        file_name=f"{proj_name.replace(' ', '_')}_CoolingTower_Design.pdf",
+                        mime="application/pdf",
+                    )
+                except Exception as e:
+                    st.error(f"Error generating PDF: {e}")
+    else:
         st.info("💡 For PDF reports, install reportlab: `pip install reportlab`")
     
     # -------------------------------
@@ -916,43 +1083,14 @@ def main():
         """
     )
 
-def build_pdf_report(proj_name, flow_type, fill_name, depth_m, free_area_frac,
-                    Qw_L_min, m_dot_w, Tin_C, Tout_C, Tdb_C, Twb_C, Q_kW, thermal_safety,
-                    A_fill, v_air_face, water_loading_m3_h_m2, DP_fill, Vdot_user,
-                    L_G_current, Q_ach_kW, Tout_ach_C, required_kaVL, available_kaVL,
-                    merkel_check, fill, warnings):
-    """Generate PDF report (optional feature)"""
-    from reportlab.lib.pagesizes import A4
-    from reportlab.pdfgen import canvas
-    from reportlab.lib.units import mm
-    
-    buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    Wp, Hp = A4
-    
-    def line(y, text, size=10, bold=False):
-        font = "Helvetica-Bold" if bold else "Helvetica"
-        c.setFont(font, size)
-        c.drawString(20*mm, y, text)
-        return y - 5*mm
-    
-    y = Hp - 20*mm
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(20*mm, y, f"Cooling Tower Design Report — {proj_name}")
-    y -= 8*mm
-    c.setFont("Helvetica", 10)
-    import pandas as pd
-    c.drawString(20*mm, y, f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M')}")
-    y -= 15*mm
-    
-    # Continue with PDF generation...
-    # [Rest of PDF generation code - simplified for brevity]
-    
-    c.showPage()
-    c.save()
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
-    return pdf_bytes
+# -------------------------------
+# Main Entry Point
+# -------------------------------
+def main():
+    # Check password first
+    if check_password():
+        # If password is correct, run the main app
+        main_app()
 
 if __name__ == "__main__":
     main()

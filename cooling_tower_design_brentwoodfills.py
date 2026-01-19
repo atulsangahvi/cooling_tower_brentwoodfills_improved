@@ -18,7 +18,20 @@ try:
 except ImportError:
     st.error("Required packages not installed. Please install numpy and pandas.")
     HAS_NUMPY_PANDAS = False
+# Check for optional packages
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    HAS_REPORTLAB = True
+except ImportError:
+    HAS_REPORTLAB = False
+    st.warning("📄 **Note**: PDF report generation requires 'reportlab'. Install with: `pip install reportlab`")
 
+try:
+    import matplotlib.pyplot as plt
+    HAS_MATPLOTLIB = True
+except ImportError:
+    HAS_MATPLOTLIB = False
 # -------------------------------
 # Utilities
 # -------------------------------

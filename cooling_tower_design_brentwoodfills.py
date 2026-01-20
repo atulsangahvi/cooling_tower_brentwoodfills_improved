@@ -1,5 +1,5 @@
-# cooling_tower_design_complete_with_CF1200_counterflow_v2.py
-# Complete Cooling Tower Design Tool with Enhanced UI & Input Controls
+# cooling_tower_design_complete_with_enhanced_limits.py
+# Complete Cooling Tower Design Tool with Enhanced UI & Manufacturer Limits Display
 
 import streamlit as st
 import numpy as np
@@ -56,6 +56,7 @@ BRENTWOOD_FILLS = {
         "water_film_thickness": 0.6,  # mm
         "max_water_loading": 14,  # m³/h·m² (lower than XF75)
         "min_water_loading": 6,
+        "recommended_water_loading": 8,  # Added recommended value
         "recommended_air_velocity": 2.2,  # m/s (lower than XF75)
         "max_air_velocity": 2.8,
         "fouling_factor": 0.80,  # Worse fouling resistance
@@ -86,6 +87,7 @@ BRENTWOOD_FILLS = {
         "water_film_thickness": 0.6,
         "max_water_loading": 15,
         "min_water_loading": 5,
+        "recommended_water_loading": 8,  # Added recommended value
         "recommended_air_velocity": 2.5,
         "max_air_velocity": 3.0,
         "fouling_factor": 0.85,
@@ -114,6 +116,7 @@ BRENTWOOD_FILLS = {
         "water_film_thickness": 0.8,
         "max_water_loading": 18,
         "min_water_loading": 6,
+        "recommended_water_loading": 10,  # Added recommended value
         "recommended_air_velocity": 2.4,
         "max_air_velocity": 2.9,
         "fouling_factor": 0.90,
@@ -142,6 +145,7 @@ BRENTWOOD_FILLS = {
         "water_film_thickness": 0.8,
         "max_water_loading": 18,
         "min_water_loading": 6,
+        "recommended_water_loading": 10,  # Added recommended value
         "recommended_air_velocity": 2.4,
         "max_air_velocity": 2.9,
         "fouling_factor": 0.88,
@@ -170,6 +174,7 @@ BRENTWOOD_FILLS = {
         "water_film_thickness": 1.2,
         "max_water_loading": 25,
         "min_water_loading": 8,
+        "recommended_water_loading": 15,  # Added recommended value
         "recommended_air_velocity": 2.6,
         "max_air_velocity": 3.2,
         "fouling_factor": 0.95,
@@ -342,13 +347,13 @@ def calculate_KaL_with_tower_type(fill_data, L_over_G, tower_type):
     return Ka_over_L
 
 # ============================================================================
-# MAIN CALCULATION FUNCTION WITH DRY BULB & ALTITUDE SUPPORT
+# MAIN CALCULATION FUNCTION WITH MANUFACTURER LIMITS SUPPORT
 # ============================================================================
 
 def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, Tdb, fill_type, 
                                  tower_type, fill_depth, face_area, altitude=0):
     """
-    Enhanced cooling tower solver with dry bulb temperature and altitude support
+    Enhanced cooling tower solver with manufacturer limits support
     """
     fill_data = BRENTWOOD_FILLS[fill_type]
     tower_data = TOWER_TYPES[tower_type]
@@ -429,18 +434,35 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, Tdb, fill_type
     P_atm = 101.325 * (1 - 0.0000225577 * altitude) ** 5.25588
     RH = relative_humidity_from_wb(Tdb, Twb, P_atm)
     
-    # Operating warnings
+    # Check against manufacturer limits
+    max_water_loading = fill_data["max_water_loading"]
+    min_water_loading = fill_data["min_water_loading"]
+    recommended_water_loading = fill_data["recommended_water_loading"]
+    max_air_velocity = fill_data["max_air_velocity"]
+    recommended_air_velocity = fill_data["recommended_air_velocity"]
+    
+    # Operating warnings with manufacturer limits
     operating_warnings = []
-    if water_loading > fill_data["max_water_loading"]:
-        operating_warnings.append(f"Water loading exceeds maximum ({fill_data['max_water_loading']} m³/h·m²)")
-    if water_loading < fill_data["min_water_loading"]:
-        operating_warnings.append(f"Water loading below minimum ({fill_data['min_water_loading']} m³/h·m²)")
-    if air_face_velocity > fill_data["max_air_velocity"]:
-        operating_warnings.append(f"Air face velocity exceeds maximum ({fill_data['max_air_velocity']} m/s)")
+    
+    if water_loading > max_water_loading:
+        operating_warnings.append(f"Water loading exceeds manufacturer maximum ({max_water_loading} m³/h·m²)")
+    if water_loading < min_water_loading:
+        operating_warnings.append(f"Water loading below manufacturer minimum ({min_water_loading} m³/h·m²)")
+    
+    if air_face_velocity > max_air_velocity:
+        operating_warnings.append(f"Air face velocity exceeds manufacturer maximum ({max_air_velocity} m/s)")
     
     # Tower type specific warnings
     if tower_type == "counterflow_induced" and air_face_velocity > 2.5:
         operating_warnings.append("High air velocity for induced draft - ensure proper plenum design")
+    
+    # Determine status for water loading
+    water_status = "❌ Exceeds Max" if water_loading > max_water_loading else \
+                   "⚠️ Below Min" if water_loading < min_water_loading else \
+                   "✅ Within Limits"
+    
+    # Determine status for air velocity
+    air_status = "❌ Exceeds Max" if air_face_velocity > max_air_velocity else "✅ Within Limits"
     
     return {
         # Basic identification
@@ -469,6 +491,15 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, Tdb, fill_type
         "air_density": air_density,
         "air_flow_volumetric": air_flow_volumetric,
         "air_face_velocity": air_face_velocity,
+        
+        # Manufacturer limits - FOR UI DISPLAY
+        "max_water_loading": max_water_loading,
+        "min_water_loading": min_water_loading,
+        "recommended_water_loading": recommended_water_loading,
+        "max_air_velocity": max_air_velocity,
+        "recommended_air_velocity": recommended_air_velocity,
+        "water_status": water_status,
+        "air_status": air_status,
         
         # Geometry and sizing
         "fill_depth": fill_depth,
@@ -570,11 +601,11 @@ def validate_with_saa15_supplier_design():
     return results, comparison
 
 # ============================================================================
-# REPORT GENERATION
+# REPORT GENERATION WITH MANUFACTURER LIMITS
 # ============================================================================
 
 def generate_txt_report(design_results):
-    """Generate a detailed TXT report"""
+    """Generate a detailed TXT report with manufacturer limits"""
     report = []
     report.append("=" * 70)
     report.append("COOLING TOWER DESIGN REPORT")
@@ -624,6 +655,29 @@ def generate_txt_report(design_results):
     report.append(f"Fan Static Pressure: {design_results['total_static_pressure']:.1f} Pa")
     report.append(f"Estimated Fan Power: {design_results['fan_power']:.2f} kW")
     
+    # MANUFACTURER SPECIFICATIONS
+    report.append("\nMANUFACTURER SPECIFICATIONS")
+    report.append("-" * 40)
+    report.append(f"Maximum Water Loading: {design_results['max_water_loading']} m³/h·m²")
+    report.append(f"Minimum Water Loading: {design_results['min_water_loading']} m³/h·m²")
+    report.append(f"Recommended Water Loading: {design_results['recommended_water_loading']} m³/h·m²")
+    report.append(f"Maximum Air Velocity: {design_results['max_air_velocity']} m/s")
+    report.append(f"Recommended Air Velocity: {design_results['recommended_air_velocity']} m/s")
+    
+    # LIMIT COMPLIANCE CHECK
+    report.append("\nLIMIT COMPLIANCE CHECK")
+    report.append("-" * 40)
+    
+    water_status = "EXCEEDS MAXIMUM" if design_results['water_loading'] > design_results['max_water_loading'] else \
+                   "BELOW MINIMUM" if design_results['water_loading'] < design_results['min_water_loading'] else "WITHIN LIMITS"
+    
+    air_status = "EXCEEDS MAXIMUM" if design_results['air_face_velocity'] > design_results['max_air_velocity'] else "WITHIN LIMITS"
+    
+    report.append(f"Water Loading: {design_results['water_loading']:.1f} m³/h·m² → {water_status}")
+    report.append(f"  (Range: {design_results['min_water_loading']} - {design_results['max_water_loading']} m³/h·m²)")
+    report.append(f"Air Velocity: {design_results['air_face_velocity']:.2f} m/s → {air_status}")
+    report.append(f"  (Maximum: {design_results['max_air_velocity']} m/s)")
+    
     # Tower Characteristics
     report.append("\nTOWER CHARACTERISTICS")
     report.append("-" * 40)
@@ -644,10 +698,22 @@ def generate_txt_report(design_results):
     report.append("\nPERFORMANCE STATUS")
     report.append("-" * 40)
     if design_results['T_cold_achieved'] <= design_results['T_cold_target']:
-        report.append("✅ DESIGN MEETS REQUIREMENTS")
+        report.append("✅ DESIGN MEETS THERMAL REQUIREMENTS")
     else:
-        report.append("⚠️ DESIGN DOES NOT MEET REQUIREMENTS")
+        report.append("⚠️ DESIGN DOES NOT MEET THERMAL REQUIREMENTS")
         report.append(f"   Required improvement: {design_results['T_cold_achieved'] - design_results['T_cold_target']:.2f} °C")
+    
+    # Overall Compliance Status
+    report.append("\nOVERALL COMPLIANCE STATUS")
+    report.append("-" * 40)
+    all_limits_ok = (design_results['water_loading'] <= design_results['max_water_loading'] and 
+                     design_results['water_loading'] >= design_results['min_water_loading'] and
+                     design_results['air_face_velocity'] <= design_results['max_air_velocity'])
+    
+    if all_limits_ok:
+        report.append("✅ ALL MANUFACTURER LIMITS SATISFIED")
+    else:
+        report.append("❌ MANUFACTURER LIMITS EXCEEDED - DESIGN MAY NOT BE FEASIBLE")
     
     # Warnings
     if design_results['operating_warnings']:
@@ -673,14 +739,14 @@ def main():
     
     # Set page config
     st.set_page_config(
-        page_title="Professional Cooling Tower Design with Enhanced UI",
+        page_title="Professional Cooling Tower Design with Manufacturer Limits",
         page_icon="🌊",
         layout="wide"
     )
     
     # Main title
     st.title("🌊 Complete Cooling Tower Design Tool")
-    st.markdown("**Enhanced UI | CF1200 Support | Counterflow Towers | Supplier Validation**")
+    st.markdown("**Enhanced UI | Manufacturer Limits Display | Counterflow Support**")
     
     # Initialize session state for geometry
     if 'tower_shape' not in st.session_state:
@@ -766,7 +832,7 @@ def main():
         )
         
         if air_input_method == "Method 1: Set L/G Ratio":
-            # CHANGED: Using number_input for L/G ratio
+            # Using number_input for L/G ratio
             L_over_G = st.number_input("L/G Ratio (Liquid to Gas mass ratio)", 
                                       value=1.25, min_value=0.5, max_value=3.0,
                                       step=0.05, format="%.3f",
@@ -796,13 +862,13 @@ def main():
         # Geometry Parameters
         st.subheader("📐 Geometry Parameters")
         
-        # CHANGED: Fill depth as number_input with 3 decimal places
+        # Fill depth as number_input with 3 decimal places
         fill_depth = st.number_input("Fill Depth (m)", 
                                     value=0.600, min_value=0.300, max_value=2.000,
                                     step=0.050, format="%.3f",
                                     help="Depth of fill media in air flow direction")
         
-        # NEW: Tower shape selection
+        # Tower shape selection
         st.markdown("**Tower Shape Selection**")
         tower_shape = st.radio(
             "Select tower shape:",
@@ -835,7 +901,7 @@ def main():
         # Store calculated face area in session state
         st.session_state.face_area = face_area
         
-        # CHANGED: Altitude as number_input with clear label
+        # Altitude as number_input with clear label
         altitude = st.number_input("Site Altitude from Sea Level (m)", 
                                   value=0, min_value=0, max_value=3000,
                                   step=100, format="%d",
@@ -852,7 +918,7 @@ def main():
             help="Select one or more fills for comparison"
         )
         
-        # NEW: Supplier Validation Button
+        # Supplier Validation Button
         st.subheader("🔍 Supplier Validation")
         run_saa15_validation = st.button(
             "🔄 Run SAA15 Supplier Design Validation",
@@ -871,7 +937,7 @@ def main():
     # MAIN CONTENT
     # ========================================================================
     
-    # NEW: SAA15 Supplier Validation Section
+    # SAA15 Supplier Validation Section
     if run_saa15_validation:
         st.header("🔬 SAA15 Supplier Design Validation")
         st.info("""
@@ -934,12 +1000,6 @@ def main():
         - If your code shows worse performance, check pressure drop assumptions
         - Dry bulb temperature affects air density and psychrometric calculations
         """)
-        
-        # Show detailed results
-        with st.expander("📋 Detailed Validation Results"):
-            st.write("**Your Calculation:**")
-            st.json({k: round(v, 3) if isinstance(v, float) else v 
-                    for k, v in comparison['your_calculation'].items()})
     
     # ========================================================================
     # MAIN CALCULATION
@@ -965,8 +1025,10 @@ def main():
                 )
                 results.append(result)
         
-        # Display results
-        st.header("📊 Performance Results")
+        # ====================================================================
+        # PERFORMANCE RESULTS WITH MANUFACTURER LIMITS
+        # ====================================================================
+        st.header("📊 Performance Results with Manufacturer Limits")
         
         # Create metrics columns
         cols = st.columns(len(selected_fills))
@@ -975,31 +1037,90 @@ def main():
                 st.subheader(f"{result['fill_name']}")
                 st.caption(f"{result['tower_name']}")
                 
+                # Temperature status
                 temp_status = "✅" if result['T_cold_achieved'] <= result['T_cold_target'] else "❌"
                 st.metric(f"{temp_status} Cold Water", 
                          f"{result['T_cold_achieved']:.2f}°C",
                          delta=f"{result['T_cold_achieved'] - result['T_cold_target']:.2f}°C vs target")
                 
+                # Water Loading with Manufacturer Limit
+                water_loading_status = result['water_status'].split()[0]  # Get emoji
+                water_color = "green" if water_loading_status == "✅" else "red" if water_loading_status == "❌" else "orange"
+                
+                st.metric(f"{water_loading_status} Water Loading", 
+                         f"{result['water_loading']:.1f} m³/h·m²",
+                         delta=f"Max: {result['max_water_loading']} m³/h·m²",
+                         delta_color="normal")
+                
+                # Additional water loading info
+                with st.expander("Water Loading Details"):
+                    st.write(f"**Actual:** {result['water_loading']:.1f} m³/h·m²")
+                    st.write(f"**Manufacturer Range:** {result['min_water_loading']} - {result['max_water_loading']} m³/h·m²")
+                    st.write(f"**Recommended:** {result['recommended_water_loading']} m³/h·m²")
+                    st.write(f"**Status:** {result['water_status']}")
+                
+                # Air Velocity with Manufacturer Limit
+                air_velocity_status = result['air_status'].split()[0]  # Get emoji
+                st.metric(f"{air_velocity_status} Air Velocity", 
+                         f"{result['air_face_velocity']:.2f} m/s",
+                         delta=f"Max: {result['max_air_velocity']} m/s",
+                         delta_color="normal")
+                
+                # Additional air velocity info
+                with st.expander("Air Velocity Details"):
+                    st.write(f"**Actual:** {result['air_face_velocity']:.2f} m/s")
+                    st.write(f"**Manufacturer Maximum:** {result['max_air_velocity']} m/s")
+                    st.write(f"**Recommended:** {result['recommended_air_velocity']} m/s")
+                    st.write(f"**Status:** {result['air_status']}")
+                
                 st.metric("Heat Rejection", f"{result['Q_achieved']:.0f} kW")
                 st.metric("Fan Power", f"{result['fan_power']:.2f} kW")
-                st.metric("Static Pressure", f"{result['total_static_pressure']:.0f} Pa")
-                st.metric("Water Loading", f"{result['water_loading']:.1f} m³/h·m²")
         
-        # Display atmospheric conditions
-        st.subheader("🌤️ Atmospheric Conditions")
-        col_atm1, col_atm2, col_atm3, col_atm4 = st.columns(4)
-        with col_atm1:
-            st.metric("Dry Bulb", f"{Tdb:.1f}°C")
-        with col_atm2:
-            st.metric("Wet Bulb", f"{Twb:.1f}°C")
-        with col_atm3:
-            # Use first result for RH (same for all fills)
-            st.metric("Relative Humidity", f"{results[0]['RH']:.1f}%")
-        with col_atm4:
-            st.metric("Altitude", f"{altitude} m ASL")
+        # ====================================================================
+        # MANUFACTURER LIMITS COMPLIANCE SUMMARY
+        # ====================================================================
+        st.header("⚙️ Manufacturer Limits Compliance Summary")
         
-        # Detailed Comparison Table
-        st.header("📋 Detailed Performance Comparison")
+        # Check for critical issues
+        critical_issues = []
+        for result in results:
+            if result['water_loading'] > result['max_water_loading']:
+                critical_issues.append(f"**{result['fill_name']}**: Water loading {result['water_loading']:.1f} m³/h·m² exceeds manufacturer maximum {result['max_water_loading']} m³/h·m²")
+            if result['water_loading'] < result['min_water_loading']:
+                critical_issues.append(f"**{result['fill_name']}**: Water loading {result['water_loading']:.1f} m³/h·m² below manufacturer minimum {result['min_water_loading']} m³/h·m²")
+            if result['air_face_velocity'] > result['max_air_velocity']:
+                critical_issues.append(f"**{result['fill_name']}**: Air velocity {result['air_face_velocity']:.2f} m/s exceeds manufacturer maximum {result['max_air_velocity']} m/s")
+        
+        if critical_issues:
+            st.error("🚨 **CRITICAL DESIGN ISSUES - Manufacturer Limits Exceeded:**")
+            for issue in critical_issues:
+                st.write(f"- {issue}")
+            
+            # Recommended actions
+            with st.expander("🛠️ Recommended Actions to Fix Issues"):
+                st.markdown("""
+                **For High Water Loading (> Manufacturer Max):**
+                1. **Reduce water flow rate** if possible
+                2. **Increase tower face area** (make tower larger)
+                3. **Select different fill** with higher limits (e.g., XF3000 max 25 m³/h·m²)
+                
+                **For Low Water Loading (< Manufacturer Min):**
+                1. **Increase water flow rate** if possible
+                2. **Reduce tower face area** (make tower smaller)
+                3. **Ensure proper water distribution** across fill
+                
+                **For High Air Velocity (> Manufacturer Max):**
+                1. **Reduce air flow rate** (increase L/G ratio)
+                2. **Increase tower face area** (make tower larger)
+                3. **Check fan selection** for proper operating point
+                """)
+        else:
+            st.success("✅ **All manufacturer limits satisfied for all selected fills**")
+        
+        # ====================================================================
+        # DETAILED COMPARISON TABLE WITH LIMITS
+        # ====================================================================
+        st.header("📋 Detailed Performance Comparison with Limits")
         comparison_data = []
         for result in results:
             comparison_data.append({
@@ -1012,12 +1133,10 @@ def main():
                 "L/G Ratio": f"{result['L_over_G']:.3f}",
                 "NTU": f"{result['NTU']:.3f}",
                 "Ka/L (1/m)": f"{result['Ka_over_L']:.3f}",
-                "Surface Area (m²)": f"{result['total_surface_area']:.0f}",
-                "Water Velocity (m/s)": f"{result['water_velocity']:.3f}",
-                "Film Thickness (mm)": f"{result['water_film_thickness']}",
-                "Water Loading (m³/h·m²)": f"{result['water_loading']:.1f}",
-                "Air Velocity (m/s)": f"{result['air_face_velocity']:.2f}",
-                "Air Density (kg/m³)": f"{result['air_density']:.3f}",
+                "Water Loading (m³/h·m²)": f"{result['water_loading']:.1f} {result['water_status']}",
+                "Water Limits": f"{result['min_water_loading']}-{result['max_water_loading']}",
+                "Air Velocity (m/s)": f"{result['air_face_velocity']:.2f} {result['air_status']}",
+                "Air Limit": f"≤{result['max_air_velocity']}",
                 "Fan Power (kW)": f"{result['fan_power']:.2f}",
                 "Static Pressure (Pa)": f"{result['total_static_pressure']:.0f}",
                 "Fouling Risk": result['fouling_risk']['risk_level']
@@ -1026,7 +1145,75 @@ def main():
         df_comparison = pd.DataFrame(comparison_data)
         st.dataframe(df_comparison, use_container_width=True)
         
-        # Tower Geometry Summary
+        # ====================================================================
+        # MANUFACTURER LIMITS DETAILED TABLE
+        # ====================================================================
+        st.header("📜 Manufacturer Specifications Comparison")
+        limits_data = []
+        for result in results:
+            # Color coding for water loading
+            water_bg_color = "background-color: #ffcccc" if result['water_loading'] > result['max_water_loading'] else \
+                            "background-color: #fff3cd" if result['water_loading'] < result['min_water_loading'] else \
+                            "background-color: #d4edda"
+            
+            # Color coding for air velocity
+            air_bg_color = "background-color: #ffcccc" if result['air_face_velocity'] > result['max_air_velocity'] else \
+                          "background-color: #d4edda"
+            
+            limits_data.append({
+                "Fill Type": result['fill_name'],
+                "Water Loading (m³/h·m²)": f"{result['water_loading']:.1f}",
+                "Min Limit": f"{result['min_water_loading']}",
+                "Max Limit": f"{result['max_water_loading']}",
+                "Status": result['water_status'],
+                "Air Velocity (m/s)": f"{result['air_face_velocity']:.2f}",
+                "Max Limit": f"{result['max_air_velocity']}",
+                "Status": result['air_status'],
+                "Recommended Water": f"{result['recommended_water_loading']}",
+                "Recommended Air": f"{result['recommended_air_velocity']}"
+            })
+        
+        df_limits = pd.DataFrame(limits_data)
+        
+        # Apply styling to highlight issues
+        def highlight_limits(row):
+            styles = [''] * len(row)
+            
+            # Check water loading column (index 1)
+            water_val = float(row[1])
+            water_min = float(row[2])
+            water_max = float(row[3])
+            
+            if water_val > water_max:
+                styles[1] = 'background-color: #ffcccc; font-weight: bold;'
+            elif water_val < water_min:
+                styles[1] = 'background-color: #fff3cd; font-weight: bold;'
+            
+            # Check air velocity column (index 5)
+            air_val = float(row[5])
+            air_max = float(row[6])
+            
+            if air_val > air_max:
+                styles[5] = 'background-color: #ffcccc; font-weight: bold;'
+            
+            return styles
+        
+        styled_df = df_limits.style.apply(highlight_limits, axis=1)
+        st.dataframe(styled_df, use_container_width=True)
+        
+        # ====================================================================
+        # ATMOSPHERIC CONDITIONS & GEOMETRY
+        # ====================================================================
+        col_atm1, col_atm2, col_atm3, col_atm4 = st.columns(4)
+        with col_atm1:
+            st.metric("Dry Bulb", f"{Tdb:.1f}°C")
+        with col_atm2:
+            st.metric("Wet Bulb", f"{Twb:.1f}°C")
+        with col_atm3:
+            st.metric("Relative Humidity", f"{results[0]['RH']:.1f}%")
+        with col_atm4:
+            st.metric("Altitude", f"{altitude} m ASL")
+        
         st.header("📐 Tower Geometry Summary")
         col_geo1, col_geo2, col_geo3, col_geo4 = st.columns(4)
         with col_geo1:
@@ -1038,20 +1225,9 @@ def main():
         with col_geo4:
             st.metric("Fill Volume", f"{st.session_state.face_area * fill_depth:.2f} m³")
         
-        # Tower Type Analysis
-        st.header("🏗️ Tower Type Analysis")
-        tower_desc = TOWER_TYPES[tower_type]
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Fill Utilization", f"{tower_desc['fill_utilization']*100:.0f}%")
-        with col2:
-            st.metric("Pressure Drop Factor", f"{tower_desc['typical_pressure_drop_factor']:.1f}x")
-        with col3:
-            st.metric("Air-Water Contact", tower_desc['air_water_contact'])
-        
-        st.info(f"**{tower_desc['description']}**")
-        
-        # Visualization
+        # ====================================================================
+        # VISUALIZATION
+        # ====================================================================
         st.header("📈 Performance Visualization")
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
@@ -1084,7 +1260,9 @@ def main():
         
         st.pyplot(fig)
         
-        # CF1200 Specific Notes
+        # ====================================================================
+        # FILL-SPECIFIC NOTES
+        # ====================================================================
         if "CF1200" in selected_fills:
             st.warning("""
             **Note about CF1200 fill:**
@@ -1093,10 +1271,13 @@ def main():
               - Lower thermal efficiency (Ka/L ~70% of XF75)
               - Higher pressure drop
               - Worse fouling resistance
+              - Lower water loading limits (14 vs 15 m³/h·m²)
             - Use for comparison with existing towers or supplier designs
             """)
         
-        # Report Generation
+        # ====================================================================
+        # REPORT GENERATION
+        # ====================================================================
         if generate_reports:
             st.header("📄 Report Generation")
             selected_for_report = st.selectbox(
@@ -1126,58 +1307,47 @@ def main():
     else:
         # Welcome message
         st.markdown("""
-        ## 🌊 Enhanced Cooling Tower Design Tool
+        ## 🌊 Complete Cooling Tower Design Tool
         
-        ### ✅ **ENHANCED UI Features:**
+        ### ✅ **ENHANCED FEATURES:**
         
-        1. **Improved Input Controls:**
-           - **Number input boxes** with +/- buttons for precise control
-           - **Fill depth** input with 3 decimal places (0.001 m precision)
-           - **L/G ratio** as direct input box
-           - **All values** populate with sensible defaults
+        1. **Manufacturer Limits Display:**
+           - Water loading limits shown prominently on-screen
+           - Air velocity limits with clear compliance status
+           - Color-coded warnings when limits are exceeded
+           - Recommended actions to fix issues
         
-        2. **Enhanced Geometry Input:**
-           - **Tower shape selection** (Rectangle or Round)
-           - **Automatic face area calculation**
-           - For Rectangle: Input Length × Width (2 decimal places)
-           - For Round: Input Diameter (2 decimal places)
-           - **Face area displayed** immediately
+        2. **Enhanced Input Controls:**
+           - Number input boxes with +/- buttons
+           - Tower shape selection (Rectangle or Round)
+           - Automatic face area calculation
+           - Dry bulb temperature input
         
-        3. **Complete Atmospheric Data:**
-           - **Dry bulb temperature** input (required for accurate psychrometrics)
-           - **Altitude from sea level** in meters
-           - **Relative humidity** calculated from dry/wet bulb
-           - **Air density** corrected for altitude and humidity
-        
-        4. **All Previous Features:**
-           - CF1200 fill support
+        3. **Complete Analysis:**
+           - CF1200 fill support with supplier validation
            - Counterflow tower types
-           - Supplier validation tool
            - Multiple fill comparison
+           - Detailed performance metrics
         
-        ### 🎯 **How to Use the Enhanced UI:**
+        ### 🎯 **How to Use:**
         
-        1. **Use +/- buttons** to adjust values precisely
-        2. **Choose tower shape** and input dimensions
-        3. **Note the calculated face area** 
-        4. **Input dry bulb temperature** for accurate air properties
-        5. **Set altitude** if not at sea level
-        6. **Run SAA15 validation** to check CF1200 modeling
-        7. **Run complete analysis** with multiple fills
+        1. Configure all inputs in the **sidebar**
+        2. Select **fills to compare** (include CF1200 for supplier comparison)
+        3. Click **"Run Complete Analysis"**
+        4. Check **manufacturer limits compliance** in results
+        5. Download **detailed report** for documentation
         
-        ### 📊 **Key Input Changes:**
+        ### 📊 **Manufacturer Limits by Fill:**
         
-        | Parameter | Old Control | New Control | Precision |
-        |-----------|-------------|-------------|-----------|
-        | Fill Depth | Slider | Number Input | 0.001 m |
-        | L/G Ratio | Slider | Number Input | 0.001 |
-        | Face Area | Slider | Calculated | Auto |
-        | Altitude | Simple input | Clear label | 1 m |
-        | Dry Bulb | Missing | Added | 0.1°C |
+        | Fill Type | Water Loading Range (m³/h·m²) | Max Air Velocity (m/s) |
+        |-----------|-------------------------------|------------------------|
+        | CF1200 | 6-14 | 2.8 |
+        | XF75 | 5-15 | 3.0 |
+        | XF3000 | 8-25 | 3.2 |
         
         ---
         
-        *Configure your design in the sidebar using the enhanced controls.*
+        *Configure your design in the sidebar and run analysis to see manufacturer limits compliance.*
         """)
 
 if __name__ == "__main__":

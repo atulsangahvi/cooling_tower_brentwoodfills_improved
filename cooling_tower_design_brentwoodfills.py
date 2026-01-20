@@ -1,5 +1,5 @@
-# cooling_tower_design_complete_with_CF1200_counterflow.py
-# Complete Cooling Tower Design Tool with CF1200 + Counterflow Support
+# cooling_tower_design_complete_with_CF1200_counterflow_v2.py
+# Complete Cooling Tower Design Tool with Enhanced UI & Input Controls
 
 import streamlit as st
 import numpy as np
@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from io import BytesIO
 import datetime
 import hashlib
+import math
 
 # ============================================================================
 # PASSWORD PROTECTION
@@ -215,7 +216,7 @@ TOWER_TYPES = {
 }
 
 # ============================================================================
-# PSYCHROMETRIC FUNCTIONS
+# PSYCHROMETRIC FUNCTIONS WITH DRY BULB SUPPORT
 # ============================================================================
 
 def saturation_pressure(temp_C):
@@ -238,12 +239,38 @@ def humidity_ratio_from_wb(db, wb, pressure=101.325):
     W = ((h_fg - Cp_vapor * wb) * Ws_wb - Cp_air * (db - wb)) / (h_fg + Cp_vapor * db - 4.186 * wb)
     return max(W, 0.0001)
 
+def relative_humidity_from_wb(db, wb, pressure=101.325):
+    """Calculate relative humidity from dry bulb and wet bulb temperatures"""
+    W = humidity_ratio_from_wb(db, wb, pressure)
+    Pws_db = saturation_pressure(db)
+    Ws_db = 0.62198 * Pws_db / (pressure - Pws_db)
+    return (W / Ws_db) * 100
+
 def enthalpy_air(db, W):
     """Calculate enthalpy of moist air in kJ/kg dry air"""
     Cp_air = 1.006
     Cp_vapor = 1.86
     h_fg = 2501.0
     return Cp_air * db + W * (h_fg + Cp_vapor * db)
+
+def air_density_calc(db, wb, altitude=0):
+    """Calculate air density considering altitude and humidity"""
+    # Atmospheric pressure at altitude
+    P_atm = 101.325 * (1 - 0.0000225577 * altitude) ** 5.25588  # kPa
+    
+    # Humidity ratio
+    W = humidity_ratio_from_wb(db, wb, P_atm)
+    
+    # Gas constant for dry air
+    R_da = 0.28705  # kJ/kg·K
+    
+    # Temperature in Kelvin
+    T_K = db + 273.15
+    
+    # Density using ideal gas law with humidity correction
+    rho = (P_atm * 1000) / (R_da * 1000 * T_K * (1 + 1.609 * W))
+    
+    return rho
 
 # ============================================================================
 # ENHANCED CALCULATION FUNCTIONS WITH TOWER TYPE SUPPORT
@@ -315,13 +342,13 @@ def calculate_KaL_with_tower_type(fill_data, L_over_G, tower_type):
     return Ka_over_L
 
 # ============================================================================
-# MAIN CALCULATION FUNCTION WITH COUNTERFLOW SUPPORT
+# MAIN CALCULATION FUNCTION WITH DRY BULB & ALTITUDE SUPPORT
 # ============================================================================
 
-def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type, 
+def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, Tdb, fill_type, 
                                  tower_type, fill_depth, face_area, altitude=0):
     """
-    Enhanced cooling tower solver with tower type support
+    Enhanced cooling tower solver with dry bulb temperature and altitude support
     """
     fill_data = BRENTWOOD_FILLS[fill_type]
     tower_data = TOWER_TYPES[tower_type]
@@ -333,10 +360,8 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type,
     # Total heat transfer coefficient
     Ka = Ka_over_L * L  # kW/°C
     
-    # Air properties
-    # Adjust air density for altitude
-    P_atm = 101.325 * (1 - 0.0000225577 * altitude) ** 5.25588  # kPa
-    air_density = 1.2 * (P_atm / 101.325) * (288.15 / (Twb + 273.15))
+    # Air properties with dry bulb and altitude
+    air_density = air_density_calc(Tdb, Twb, altitude)  # kg/m³
     air_flow_volumetric = G / air_density  # m³/s
     air_face_velocity = air_flow_volumetric / face_area  # m/s
     
@@ -400,6 +425,10 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type,
     fan_power = (air_flow_volumetric * pressure_results["total_static_pressure"]) / \
                 (fan_efficiency * transmission_efficiency * 1000)  # kW
     
+    # Calculate relative humidity
+    P_atm = 101.325 * (1 - 0.0000225577 * altitude) ** 5.25588
+    RH = relative_humidity_from_wb(Tdb, Twb, P_atm)
+    
     # Operating warnings
     operating_warnings = []
     if water_loading > fill_data["max_water_loading"]:
@@ -425,6 +454,8 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type,
         "T_cold_achieved": T_cold_achieved,
         "T_cold_target": T_cold_target,
         "Twb": Twb,
+        "Tdb": Tdb,
+        "RH": RH,
         "Q_achieved": Q_achieved,
         "Q_target": L * 4.186 * (T_hot - T_cold_target),
         "approach": T_cold_achieved - Twb,
@@ -435,6 +466,7 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type,
         "G": G,
         "L_over_G": L_over_G,
         "water_loading": water_loading,
+        "air_density": air_density,
         "air_flow_volumetric": air_flow_volumetric,
         "air_face_velocity": air_face_velocity,
         
@@ -472,7 +504,11 @@ def solve_cooling_tower_enhanced(L, G, T_hot, T_cold_target, Twb, fill_type,
         "free_area_fraction": fill_data["free_area_fraction"],
         
         # Tower characteristics
-        "tower_efficiency_factor": tower_data["fill_utilization"]
+        "tower_efficiency_factor": tower_data["fill_utilization"],
+        
+        # Atmospheric conditions
+        "altitude": altitude,
+        "air_density_calc": air_density
     }
 
 # ============================================================================
@@ -491,6 +527,7 @@ def validate_with_saa15_supplier_design():
         "T_hot": 40.0,  # °C (from range 5°C and T_cold=35°C)
         "T_cold_target": 35.0,  # °C
         "Twb": 30.0,  # °C (assumed from your input)
+        "Tdb": 33.0,  # °C (estimated for 60% RH)
         "fill_type": "CF1200",
         "tower_type": "counterflow_induced",
         "fill_depth": 0.75,  # m
@@ -556,8 +593,11 @@ def generate_txt_report(design_results):
     report.append(f"Hot Water In: {design_results['T_hot']:.1f} °C")
     report.append(f"Target Cold Water Out: {design_results['T_cold_target']:.1f} °C")
     report.append(f"Ambient Wet Bulb: {design_results['Twb']:.1f} °C")
+    report.append(f"Ambient Dry Bulb: {design_results['Tdb']:.1f} °C")
+    report.append(f"Relative Humidity: {design_results['RH']:.1f} %")
+    report.append(f"Site Altitude: {design_results['altitude']} m ASL")
     report.append(f"Tower Type: {design_results['tower_name']}")
-    report.append(f"Fill Depth: {design_results['fill_depth']:.2f} m")
+    report.append(f"Fill Depth: {design_results['fill_depth']:.3f} m")
     report.append(f"Face Area: {design_results['face_area']:.2f} m²")
     
     # Design Results
@@ -579,6 +619,7 @@ def generate_txt_report(design_results):
     report.append(f"Water Velocity in Channels: {design_results['water_velocity']:.3f} m/s")
     report.append(f"Water Film Thickness: {design_results['water_film_thickness']} mm")
     report.append(f"Air Face Velocity: {design_results['air_face_velocity']:.2f} m/s")
+    report.append(f"Air Density: {design_results['air_density']:.3f} kg/m³")
     report.append(f"Fan Airflow: {design_results['air_flow_volumetric']:.2f} m³/s")
     report.append(f"Fan Static Pressure: {design_results['total_static_pressure']:.1f} Pa")
     report.append(f"Estimated Fan Power: {design_results['fan_power']:.2f} kW")
@@ -622,7 +663,7 @@ def generate_txt_report(design_results):
     return "\n".join(report)
 
 # ============================================================================
-# STREAMLIT APP - MAIN FUNCTION
+# STREAMLIT APP - MAIN FUNCTION WITH ENHANCED UI
 # ============================================================================
 
 def main():
@@ -632,17 +673,23 @@ def main():
     
     # Set page config
     st.set_page_config(
-        page_title="Professional Cooling Tower Design with Counterflow",
+        page_title="Professional Cooling Tower Design with Enhanced UI",
         page_icon="🌊",
         layout="wide"
     )
     
     # Main title
     st.title("🌊 Complete Cooling Tower Design Tool")
-    st.markdown("**CF1200 Support | Counterflow Tower Types | Supplier Validation**")
+    st.markdown("**Enhanced UI | CF1200 Support | Counterflow Towers | Supplier Validation**")
+    
+    # Initialize session state for geometry
+    if 'tower_shape' not in st.session_state:
+        st.session_state.tower_shape = "Rectangle"
+    if 'face_area' not in st.session_state:
+        st.session_state.face_area = 36.94
     
     # ========================================================================
-    # SIDEBAR - DESIGN INPUTS
+    # SIDEBAR - DESIGN INPUTS WITH ENHANCED CONTROLS
     # ========================================================================
     with st.sidebar:
         st.header("📥 Design Inputs")
@@ -655,18 +702,40 @@ def main():
             help="Choose whether you know the heat load or water flow rate"
         )
         
-        # Temperature inputs
+        # Temperature inputs - Using number_input with step for +/- buttons
+        st.subheader("🌡️ Temperature Conditions")
+        
         col1, col2 = st.columns(2)
         with col1:
-            T_hot = st.number_input("Hot Water In (°C)", value=37.0, min_value=20.0, max_value=60.0, step=0.5)
+            T_hot = st.number_input("Hot Water In (°C)", 
+                                   value=37.0, min_value=20.0, max_value=60.0, 
+                                   step=0.5, format="%.1f",
+                                   help="Inlet water temperature to cooling tower")
         with col2:
-            T_cold_target = st.number_input("Target Cold Water Out (°C)", value=32.0, min_value=10.0, max_value=40.0, step=0.5)
+            T_cold_target = st.number_input("Target Cold Water Out (°C)", 
+                                           value=32.0, min_value=10.0, max_value=40.0, 
+                                           step=0.5, format="%.1f",
+                                           help="Desired outlet water temperature")
         
-        Twb = st.number_input("Ambient Wet Bulb (°C)", value=28.0, min_value=10.0, max_value=40.0, step=0.5)
+        col3, col4 = st.columns(2)
+        with col3:
+            Twb = st.number_input("Ambient Wet Bulb (°C)", 
+                                 value=28.0, min_value=10.0, max_value=40.0, 
+                                 step=0.5, format="%.1f",
+                                 help="Critical design parameter for cooling towers")
+        with col4:
+            # ADDED: Dry bulb temperature input
+            Tdb = st.number_input("Ambient Dry Bulb (°C)", 
+                                 value=33.0, min_value=10.0, max_value=50.0, 
+                                 step=0.5, format="%.1f",
+                                 help="Ambient air dry bulb temperature")
         
-        # Mode-specific inputs
+        # Mode-specific inputs with number_input
+        st.subheader("💧 Flow Parameters")
         if calc_mode == "Mode 1: Given Heat Load → Find Water Flow":
-            Q_input = st.number_input("Heat Load to Remove (kW)", value=2090.0, min_value=100.0, step=100.0)
+            Q_input = st.number_input("Heat Load to Remove (kW)", 
+                                     value=2090.0, min_value=100.0, max_value=10000.0,
+                                     step=100.0, format="%.1f")
             Cp = 4.186
             if T_hot > T_cold_target:
                 L = Q_input / (Cp * (T_hot - T_cold_target))
@@ -675,7 +744,9 @@ def main():
                 st.error("Hot water temperature must be greater than cold water target")
             st.metric("Calculated Water Flow", f"{L:.2f} kg/s")
         else:
-            L = st.number_input("Water Flow Rate (kg/s)", value=100.0, min_value=10.0, step=5.0)
+            L = st.number_input("Water Flow Rate (kg/s)", 
+                               value=100.0, min_value=10.0, max_value=500.0,
+                               step=5.0, format="%.2f")
             Cp = 4.186
             if T_hot > T_cold_target:
                 Q_input = L * Cp * (T_hot - T_cold_target)
@@ -684,8 +755,8 @@ def main():
                 st.error("Hot water temperature must be greater than cold water target")
             st.metric("Calculated Heat Load", f"{Q_input:.0f} kW")
         
-        # Air Flow Specification
-        st.header("🌬️ Air Flow Specification")
+        # Air Flow Specification with L/G as number_input
+        st.subheader("🌬️ Air Flow Specification")
         
         air_input_method = st.radio(
             "Air Flow Input Method:",
@@ -695,16 +766,22 @@ def main():
         )
         
         if air_input_method == "Method 1: Set L/G Ratio":
-            L_over_G = st.slider("L/G Ratio", min_value=0.5, max_value=2.5, value=1.25, step=0.05)
+            # CHANGED: Using number_input for L/G ratio
+            L_over_G = st.number_input("L/G Ratio (Liquid to Gas mass ratio)", 
+                                      value=1.25, min_value=0.5, max_value=3.0,
+                                      step=0.05, format="%.3f",
+                                      help="Typical range: 0.8-1.5. Higher = more air, lower pressure drop")
             G = L / L_over_G
             st.metric("Calculated Air Flow", f"{G:.2f} kg/s")
         else:
-            G = st.number_input("Air Mass Flow Rate (kg/s)", value=80.0, min_value=10.0, step=5.0)
+            G = st.number_input("Air Mass Flow Rate (kg/s)", 
+                               value=80.0, min_value=10.0, max_value=300.0,
+                               step=5.0, format="%.2f")
             L_over_G = L / G
             st.metric("Calculated L/G Ratio", f"{L_over_G:.3f}")
         
-        # NEW: Tower Type Selection
-        st.header("🏗️ Tower Configuration")
+        # Tower Type Selection
+        st.subheader("🏗️ Tower Configuration")
         tower_type = st.selectbox(
             "Tower Type:",
             options=list(TOWER_TYPES.keys()),
@@ -717,25 +794,66 @@ def main():
         st.caption(f"*{tower_desc}*")
         
         # Geometry Parameters
-        st.header("📐 Geometry Parameters")
-        fill_depth = st.slider("Fill Depth (m)", min_value=0.3, max_value=2.0, value=0.6, step=0.1)
-        face_area = st.slider("Face Area (m²)", min_value=10.0, max_value=100.0, value=36.94, step=5.0)
+        st.subheader("📐 Geometry Parameters")
         
-        # NEW: Altitude input
-        altitude = st.number_input("Site Altitude (m)", value=0, min_value=0, max_value=3000, step=100)
+        # CHANGED: Fill depth as number_input with 3 decimal places
+        fill_depth = st.number_input("Fill Depth (m)", 
+                                    value=0.600, min_value=0.300, max_value=2.000,
+                                    step=0.050, format="%.3f",
+                                    help="Depth of fill media in air flow direction")
+        
+        # NEW: Tower shape selection
+        st.markdown("**Tower Shape Selection**")
+        tower_shape = st.radio(
+            "Select tower shape:",
+            ["Rectangle", "Round"],
+            horizontal=True,
+            key="tower_shape_selector"
+        )
+        
+        # Geometry inputs based on shape
+        if tower_shape == "Rectangle":
+            col1, col2 = st.columns(2)
+            with col1:
+                fill_length = st.number_input("Fill Face Length (m)", 
+                                             value=6.08, min_value=1.0, max_value=20.0,
+                                             step=0.1, format="%.2f")
+            with col2:
+                fill_width = st.number_input("Fill Face Width/Breadth (m)", 
+                                            value=6.08, min_value=1.0, max_value=20.0,
+                                            step=0.1, format="%.2f")
+            face_area = fill_length * fill_width
+            st.success(f"**Calculated Face Area:** {face_area:.2f} m²")
+            
+        else:  # Round tower
+            diameter = st.number_input("Tower Diameter (m)", 
+                                      value=6.85, min_value=1.0, max_value=20.0,
+                                      step=0.1, format="%.2f")
+            face_area = math.pi * (diameter / 2) ** 2
+            st.success(f"**Calculated Face Area:** {face_area:.2f} m²")
+        
+        # Store calculated face area in session state
+        st.session_state.face_area = face_area
+        
+        # CHANGED: Altitude as number_input with clear label
+        altitude = st.number_input("Site Altitude from Sea Level (m)", 
+                                  value=0, min_value=0, max_value=3000,
+                                  step=100, format="%d",
+                                  help="Altitude above sea level for air density correction")
         
         # Fill Selection - INCLUDING CF1200
-        st.header("🎯 Brentwood Fill Selection")
+        st.subheader("🎯 Brentwood Fill Selection")
         fill_options = list(BRENTWOOD_FILLS.keys())
         selected_fills = st.multiselect(
             "Select fills to compare:",
             options=fill_options,
             default=["CF1200", "XF75"],  # Default includes CF1200
-            format_func=lambda x: BRENTWOOD_FILLS[x]["name"]
+            format_func=lambda x: BRENTWOOD_FILLS[x]["name"],
+            help="Select one or more fills for comparison"
         )
         
         # NEW: Supplier Validation Button
-        st.header("🔍 Supplier Validation")
+        st.subheader("🔍 Supplier Validation")
         run_saa15_validation = st.button(
             "🔄 Run SAA15 Supplier Design Validation",
             help="Compare your code against supplier's SAA15 CF1200 design",
@@ -746,7 +864,7 @@ def main():
         run_calc = st.button("🚀 Run Complete Analysis", type="primary", use_container_width=True)
         
         # Report generation
-        st.header("📄 Report Generation")
+        st.subheader("📄 Report Generation")
         generate_reports = st.checkbox("Generate TXT Report", value=True)
     
     # ========================================================================
@@ -763,7 +881,7 @@ def main():
         - Fill: CF1200, depth 0.75m
         - Tower: Counterflow induced draft
         - Hot water: 40°C, Cold target: 35°C
-        - Wet bulb: 30°C
+        - Wet bulb: 30°C, Dry bulb: 33°C
         """)
         
         with st.spinner("Running validation against supplier's SAA15 design..."):
@@ -779,6 +897,7 @@ def main():
             st.metric("Ka/L", f"{results['Ka_over_L']:.3f}")
             st.metric("Static Pressure", f"{results['total_static_pressure']:.1f} Pa")
             st.metric("Water Loading", f"{results['water_loading']:.1f} m³/h·m²")
+            st.metric("Air Density", f"{results['air_density']:.3f} kg/m³")
         
         with col2:
             st.subheader("Supplier's Claim (SAA15)")
@@ -787,10 +906,11 @@ def main():
             st.metric("Ka/L", "0.982")
             st.metric("Static Pressure", f"{comparison['supplier_claimed']['static_pressure_Pa']:.1f} Pa")
             st.metric("Water Loading", f"{comparison['supplier_claimed']['water_loading']:.1f} m³/h·m²")
+            st.metric("Air Density", "~0.915 kg/m³")
         
         # Differences
         st.subheader("📊 Differences")
-        diff_col1, diff_col2, diff_col3 = st.columns(3)
+        diff_col1, diff_col2, diff_col3, diff_col4 = st.columns(4)
         with diff_col1:
             delta_temp = comparison['differences']['T_cold_diff']
             st.metric("Δ Cold Temp", f"{delta_temp:.2f}°C", 
@@ -803,6 +923,8 @@ def main():
             delta_kal = comparison['differences']['Ka_over_L_diff']
             st.metric("Δ Ka/L", f"{delta_kal:.3f}",
                      delta_color="normal" if delta_kal > 0 else "inverse")
+        with diff_col4:
+            st.metric("RH Calculated", f"{results['RH']:.1f}%", "From dry/wet bulb")
         
         # Interpretation
         st.info("""
@@ -810,6 +932,7 @@ def main():
         - If your code matches supplier closely (±5%), CF1200 curve is accurate
         - If your code shows better performance, supplier may be conservative
         - If your code shows worse performance, check pressure drop assumptions
+        - Dry bulb temperature affects air density and psychrometric calculations
         """)
         
         # Show detailed results
@@ -827,14 +950,18 @@ def main():
             st.error("❌ Error: Hot water temperature must be GREATER than cold water target")
             st.stop()
         
+        # Validate dry bulb is greater than wet bulb
+        if Tdb <= Twb:
+            st.warning("⚠️ Note: Dry bulb temperature should typically be higher than wet bulb temperature")
+        
         # Calculate for all selected fills
         results = []
         
         with st.spinner("Running cooling tower calculations..."):
             for fill in selected_fills:
                 result = solve_cooling_tower_enhanced(
-                    L, G, T_hot, T_cold_target, Twb, fill,
-                    tower_type, fill_depth, face_area, altitude
+                    L, G, T_hot, T_cold_target, Twb, Tdb, fill,
+                    tower_type, fill_depth, st.session_state.face_area, altitude
                 )
                 results.append(result)
         
@@ -858,6 +985,19 @@ def main():
                 st.metric("Static Pressure", f"{result['total_static_pressure']:.0f} Pa")
                 st.metric("Water Loading", f"{result['water_loading']:.1f} m³/h·m²")
         
+        # Display atmospheric conditions
+        st.subheader("🌤️ Atmospheric Conditions")
+        col_atm1, col_atm2, col_atm3, col_atm4 = st.columns(4)
+        with col_atm1:
+            st.metric("Dry Bulb", f"{Tdb:.1f}°C")
+        with col_atm2:
+            st.metric("Wet Bulb", f"{Twb:.1f}°C")
+        with col_atm3:
+            # Use first result for RH (same for all fills)
+            st.metric("Relative Humidity", f"{results[0]['RH']:.1f}%")
+        with col_atm4:
+            st.metric("Altitude", f"{altitude} m ASL")
+        
         # Detailed Comparison Table
         st.header("📋 Detailed Performance Comparison")
         comparison_data = []
@@ -877,6 +1017,7 @@ def main():
                 "Film Thickness (mm)": f"{result['water_film_thickness']}",
                 "Water Loading (m³/h·m²)": f"{result['water_loading']:.1f}",
                 "Air Velocity (m/s)": f"{result['air_face_velocity']:.2f}",
+                "Air Density (kg/m³)": f"{result['air_density']:.3f}",
                 "Fan Power (kW)": f"{result['fan_power']:.2f}",
                 "Static Pressure (Pa)": f"{result['total_static_pressure']:.0f}",
                 "Fouling Risk": result['fouling_risk']['risk_level']
@@ -884,6 +1025,18 @@ def main():
         
         df_comparison = pd.DataFrame(comparison_data)
         st.dataframe(df_comparison, use_container_width=True)
+        
+        # Tower Geometry Summary
+        st.header("📐 Tower Geometry Summary")
+        col_geo1, col_geo2, col_geo3, col_geo4 = st.columns(4)
+        with col_geo1:
+            st.metric("Face Area", f"{st.session_state.face_area:.2f} m²")
+        with col_geo2:
+            st.metric("Fill Depth", f"{fill_depth:.3f} m")
+        with col_geo3:
+            st.metric("Tower Shape", tower_shape)
+        with col_geo4:
+            st.metric("Fill Volume", f"{st.session_state.face_area * fill_depth:.2f} m³")
         
         # Tower Type Analysis
         st.header("🏗️ Tower Type Analysis")
@@ -963,6 +1116,10 @@ def main():
                 mime="text/plain",
                 use_container_width=True
             )
+            
+            # Show report preview
+            with st.expander("📋 Preview Report (First 2000 characters)"):
+                st.text(txt_report[:2000] + "..." if len(txt_report) > 2000 else txt_report)
     
     elif run_calc and not selected_fills:
         st.warning("Please select at least one Brentwood fill type.")
@@ -971,47 +1128,56 @@ def main():
         st.markdown("""
         ## 🌊 Enhanced Cooling Tower Design Tool
         
-        ### ✅ **NEW Features Added:**
+        ### ✅ **ENHANCED UI Features:**
         
-        1. **CF1200 Fill Support:**
-           - Complete performance data for Brentwood ACCU-PAK CF1200
-           - Tuned to match supplier's SAA15 design specifications
-           - Comparison with modern fills (XF75)
+        1. **Improved Input Controls:**
+           - **Number input boxes** with +/- buttons for precise control
+           - **Fill depth** input with 3 decimal places (0.001 m precision)
+           - **L/G ratio** as direct input box
+           - **All values** populate with sensible defaults
         
-        2. **Counterflow Tower Types:**
-           - Counterflow (Induced Draft) - fan on top
-           - Counterflow (Forced Draft) - fan at bottom
-           - Crossflow - existing
+        2. **Enhanced Geometry Input:**
+           - **Tower shape selection** (Rectangle or Round)
+           - **Automatic face area calculation**
+           - For Rectangle: Input Length × Width (2 decimal places)
+           - For Round: Input Diameter (2 decimal places)
+           - **Face area displayed** immediately
         
-        3. **Supplier Validation Tool:**
-           - One-click validation against SAA15 supplier design
-           - Side-by-side comparison
-           - Difference analysis
+        3. **Complete Atmospheric Data:**
+           - **Dry bulb temperature** input (required for accurate psychrometrics)
+           - **Altitude from sea level** in meters
+           - **Relative humidity** calculated from dry/wet bulb
+           - **Air density** corrected for altitude and humidity
         
-        4. **Enhanced Calculations:**
-           - Altitude correction for air density
-           - Tower-type specific pressure drop factors
-           - Fan power calculation with efficiency
+        4. **All Previous Features:**
+           - CF1200 fill support
+           - Counterflow tower types
+           - Supplier validation tool
+           - Multiple fill comparison
         
-        ### 🎯 **How to Use the New Features:**
+        ### 🎯 **How to Use the Enhanced UI:**
         
-        1. **Select CF1200** in fill selection for supplier comparison
-        2. **Choose counterflow** in tower type for vertical designs
-        3. **Click "Run SAA15 Validation"** to compare with supplier
-        4. **Run complete analysis** with multiple fills and tower types
+        1. **Use +/- buttons** to adjust values precisely
+        2. **Choose tower shape** and input dimensions
+        3. **Note the calculated face area** 
+        4. **Input dry bulb temperature** for accurate air properties
+        5. **Set altitude** if not at sea level
+        6. **Run SAA15 validation** to check CF1200 modeling
+        7. **Run complete analysis** with multiple fills
         
-        ### 📊 **CF1200 vs XF75 Comparison:**
+        ### 📊 **Key Input Changes:**
         
-        | Parameter | CF1200 (Old) | XF75 (Modern) |
-        |-----------|--------------|---------------|
-        | Ka/L at L/G=1.25 | ~1.15 | ~1.40 |
-        | Pressure Drop | Higher | Lower |
-        | Fouling Resistance | Moderate | Good |
-        | Max Water Loading | 14 m³/h·m² | 15 m³/h·m² |
+        | Parameter | Old Control | New Control | Precision |
+        |-----------|-------------|-------------|-----------|
+        | Fill Depth | Slider | Number Input | 0.001 m |
+        | L/G Ratio | Slider | Number Input | 0.001 |
+        | Face Area | Slider | Calculated | Auto |
+        | Altitude | Simple input | Clear label | 1 m |
+        | Dry Bulb | Missing | Added | 0.1°C |
         
         ---
         
-        *Configure your design in the sidebar and run analyses.*
+        *Configure your design in the sidebar using the enhanced controls.*
         """)
 
 if __name__ == "__main__":
